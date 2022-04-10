@@ -1,407 +1,195 @@
-/* ----------------------------------------------------------------------------
- * Copyright (c) Huawei Technologies Co., Ltd. 2013-2021. All rights reserved.
- * Description: Mqtt Client For LiteOS
- * Author: Huawei LiteOS Team
- * Create: 2013-01-01
- * Redistribution and use in source and binary forms, with or without modification,
- * are permitted provided that the following conditions are met:
- * 1. Redistributions of source code must retain the above copyright notice, this list of
- * conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice, this list
- * of conditions and the following disclaimer in the documentation and/or other materials
- * provided with the distribution.
- * 3. Neither the name of the copyright holder nor the names of its contributors may be used
- * to endorse or promote products derived from this software without specific prior written
- * permission.
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- * --------------------------------------------------------------------------- */
+/*******************************************************************************
+ * Copyright (c) 2014, 2015 IBM Corp.
+ *
+ * All rights reserved. This program and the accompanying materials
+ * are made available under the terms of the Eclipse Public License v1.0
+ * and Eclipse Distribution License v1.0 which accompany this distribution.
+ *
+ * The Eclipse Public License is available at
+ *    http://www.eclipse.org/legal/epl-v10.html
+ * and the Eclipse Distribution License is available at
+ *   http://www.eclipse.org/org/documents/edl-v10.php.
+ *
+ * Contributors:
+ *    Allan Stockdill-Mander - initial API and implementation and/or initial documentation
+ *    Ian Craggs - convert to FreeRTOS
+ *******************************************************************************/
 
-#include "MQTTliteos.h"
+#include "MQTTLiteOS.h"
 
-#if defined(LOSCFG_COMPONENTS_SECURITY_MBEDTLS)
-#include "mbedtls/net_sockets.h"
-#include "mbedtls/ssl.h"
-#include "mbedtls/entropy.h"
-#include "mbedtls/ctr_drbg.h"
-#include "mbedtls/platform.h"
-#include "dtls_interface.h"
-#endif /* LOSCFG_COMPONENTS_SECURITY_MBEDTLS */
-
-#if defined(WITH_LINUX)
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <sys/time.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <errno.h>
-#elif defined(LOSCFG_COMPONENTS_NET_LWIP)
-//#include "lwip/sockets.h"
-#include "lwip/netdb.h"
-#include "lwip/errno.h"
-#endif
-#include "osdepends/atiny_osdep.h"
-
-#include "atiny_log.h"
-
-#ifdef __cplusplus
-#if __cplusplus
-extern "C"
+int ThreadStart(Thread *thread, void (*fn)(void *), void *arg)
 {
-#endif /* __cplusplus */
-#endif /* __cplusplus */
+    int rc = 0;
+    thread = thread;
 
-#define get_time_ms atiny_gettime_ms
+    osThreadAttr_t attr;
 
-    void TimerInit(Timer *timer)
-    {
-        timer->end_time = get_time_ms();
-    }
+    attr.name = "MQTTTask";
+    attr.attr_bits = 0U;
+    attr.cb_mem = NULL;
+    attr.cb_size = 0U;
+    attr.stack_mem = NULL;
+    attr.stack_size = 2048;
+    attr.priority = osThreadGetPriority(osThreadGetId());
 
-    char TimerIsExpired(Timer *timer)
-    {
-        unsigned long long now = get_time_ms();
-        return now >= timer->end_time;
-    }
+    rc = (int)osThreadNew((osThreadFunc_t)fn, arg, &attr);
 
-    void TimerCountdownMS(Timer *timer, unsigned int timeout)
-    {
-        unsigned long long now = get_time_ms();
-        timer->end_time = now + timeout;
-    }
-
-    void TimerCountdown(Timer *timer, unsigned int timeout)
-    {
-        unsigned long long now = get_time_ms();
-        timer->end_time = now + timeout * 1000;
-    }
-
-    int TimerLeftMS(Timer *timer)
-    {
-        UINT64 now = get_time_ms();
-        return timer->end_time <= now ? 0 : timer->end_time - now;
-    }
-
-    int MutexInit(Mutex *mutex)
-    {
-        int ret = atiny_task_mutex_create(mutex);
-        if (ret != LOS_OK)
-        {
-            ATINY_LOG(LOG_ERR, "create mutex fail, ret %d.", ret);
-        }
-        return ret;
-    }
-    int MutexLock(Mutex *mutex)
-    {
-        int ret = atiny_task_mutex_lock(mutex);
-        if (ret != LOS_OK)
-        {
-            ATINY_LOG(LOG_ERR, "lock mutex fail,mutex %d,ret %d.", mutex->mutex, ret);
-        }
-        return ret;
-    }
-
-    int MutexUnlock(Mutex *mutex)
-    {
-        int ret = atiny_task_mutex_unlock(mutex);
-        if (ret != LOS_OK)
-        {
-            ATINY_LOG(LOG_ERR, "unlock mutex fail,mutex %d,ret %d.", mutex->mutex, ret);
-        }
-        return ret;
-    }
-
-    void MutexDestory(Mutex *mutex)
-    {
-        int ret = atiny_task_mutex_delete(mutex);
-        if (ret != LOS_OK)
-        {
-            ATINY_LOG(LOG_ERR, "delete mutex fail,mutex %d,ret %d.", mutex->mutex, ret);
-        }
-    }
-
-    int ThreadStart(Thread *thread, void (*fn)(void *), void *arg)
-    {
-        (void)thread;
-        (void)fn;
-        (void)arg;
-        return -1;
-    }
-
-    static int los_mqtt_read(void *ctx, unsigned char *buffer, int len, int timeout_ms)
-    {
-        int ret = atiny_net_recv_timeout(ctx, buffer, len, timeout_ms);
-        /* 0 is timeout for mqtt for normal select */
-        if (ret == ATINY_NET_TIMEOUT)
-        {
-            ret = 0;
-        }
-        return ret;
-    }
-
-    static int los_mqtt_tls_read(mbedtls_ssl_context *ssl, unsigned char *buffer, int len, int timeout_ms)
-    {
-        int ret;
-
-        if ((ssl == NULL) || (buffer == NULL))
-        {
-            ATINY_LOG(LOG_FATAL, "invalid params.");
-            return -1;
-        }
-
-        mbedtls_ssl_conf_read_timeout((mbedtls_ssl_config *)ssl->MBEDTLS_PRIVATE(conf), timeout_ms);
-
-        ret = mbedtls_ssl_read(ssl, buffer, len);
-        if ((ret == MBEDTLS_ERR_SSL_WANT_READ) || (ret == MBEDTLS_ERR_SSL_WANT_WRITE) || (ret == MBEDTLS_ERR_SSL_TIMEOUT))
-        {
-            ret = 0;
-        }
-
-        return ret;
-    }
-
-    static int los_read(Network *n, unsigned char *buffer, int len, int timeout_ms)
-    {
-        int ret = -1;
-        mqtt_security_info_s *info = NULL;
-
-        if ((n == NULL) || (buffer == NULL))
-        {
-            ATINY_LOG(LOG_FATAL, "invalid params.");
-            return -1;
-        }
-
-        info = n->get_security_info(n->param);
-
-        switch (info->security_type)
-        {
-        case MQTT_SECURITY_TYPE_NONE:
-            ret = los_mqtt_read(n->ctx, buffer, len, timeout_ms);
-            break;
-        case MQTT_SECURITY_TYPE_PSK:
-        case MQTT_SECURITY_TYPE_CA:
-            ret = los_mqtt_tls_read(n->ctx, buffer, len, timeout_ms);
-            break;
-        default:
-            ATINY_LOG(LOG_WARNING, "unknow proto : %d", info->security_type);
-            break;
-        }
-
-        return ret;
-    }
-
-    static int los_write(Network *n, unsigned char *buffer, int len, int timeout_ms)
-    {
-        int ret = -1;
-        mqtt_security_info_s *info = NULL;
-
-        if ((n == NULL) || (buffer == NULL))
-        {
-            ATINY_LOG(LOG_FATAL, "invalid params.");
-            return -1;
-        }
-
-        info = n->get_security_info(n->param);
-
-        switch (info->security_type)
-        {
-        case MQTT_SECURITY_TYPE_NONE:
-            ret = atiny_net_send_timeout(n->ctx, buffer, len, timeout_ms);
-            break;
-        case MQTT_SECURITY_TYPE_PSK:
-        case MQTT_SECURITY_TYPE_CA:
-            ret = dtls_write(n->ctx, buffer, len);
-            break;
-        default:
-            ATINY_LOG(LOG_WARNING, "unknow proto : %d", info->security_type);
-            break;
-        }
-
-        return ret;
-    }
-
-    void NetworkInit(Network *n, mqtt_security_info_s *(*get_security_info)(void *param))
-    {
-        if ((n == NULL) || (get_security_info == NULL))
-        {
-            ATINY_LOG(LOG_FATAL, "invalid params.");
-            return;
-        }
-        n->mqttread = los_read;
-        n->mqttwrite = los_write;
-        n->get_security_info = get_security_info;
-        return;
-    }
-
-    static int los_mqtt_connect(Network *n, char *addr, int port)
-    {
-        char port_str[16];
-
-        (void)snprintf(port_str, sizeof(port_str), "%u", port);
-        port_str[sizeof(port_str) - 1] = '\0';
-        atiny_net_context *ctx = (atiny_net_context *)atiny_malloc(sizeof(atiny_net_context));
-        int ret = atiny_net_connect(ctx, addr, port_str, ATINY_PROTO_TCP);
-        if (ret == -1)
-        {
-            ATINY_LOG(LOG_FATAL, "atiny_net_connect fail");
-            return ATINY_NET_ERR;
-        }
-        else
-        {
-            n->ctx = (void *)ctx;
-        }
-
-        return ATINY_NET_OK;
-    }
-
-#define PORT_BUF_LEN 16
-    static int los_mqtt_tls_connect(Network *n, char *addr, int port)
-    {
-        int ret;
-        mbedtls_ssl_context *ssl = NULL;
-        dtls_shakehand_info_s shakehand_info;
-        dtls_establish_info_s establish_info;
-        mqtt_security_info_s *security_info;
-        char port_buf[PORT_BUF_LEN];
-
-        security_info = n->get_security_info(n->param);
-
-        if (security_info->security_type == MQTT_SECURITY_TYPE_PSK)
-        {
-            establish_info.psk_or_cert = VERIFY_WITH_PSK;
-            establish_info.v.p.psk = (unsigned char *)security_info->u.psk.psk;
-            establish_info.v.p.psk_len = security_info->u.psk.psk_len;
-            establish_info.v.p.psk_identity = (unsigned char *)security_info->u.psk.psk_id;
-        }
-        else
-        {
-            establish_info.psk_or_cert = VERIFY_WITH_CERT;
-            establish_info.v.c.ca_cert = (const unsigned char *)security_info->u.ca.ca_crt;
-            establish_info.v.c.cert_len = security_info->u.ca.ca_len;
-        }
-        establish_info.udp_or_tcp = MBEDTLS_NET_PROTO_TCP;
-
-        ssl = (void *)dtls_ssl_new(&establish_info, MBEDTLS_SSL_IS_CLIENT);
-        if (ssl == NULL)
-        {
-            ATINY_LOG(LOG_ERR, "create ssl context failed");
-            goto exit;
-        }
-
-        memset(&shakehand_info, 0, sizeof(dtls_shakehand_info_s));
-
-        if (security_info->security_type == MQTT_SECURITY_TYPE_PSK)
-        {
-            shakehand_info.psk_or_cert = VERIFY_WITH_PSK;
-        }
-        else
-        {
-            shakehand_info.psk_or_cert = VERIFY_WITH_CERT;
-        }
-        shakehand_info.client_or_server = MBEDTLS_SSL_IS_CLIENT;
-        shakehand_info.udp_or_tcp = MBEDTLS_NET_PROTO_TCP;
-        shakehand_info.u.c.host = addr;
-        atiny_snprintf(port_buf, PORT_BUF_LEN, "%d", port);
-        shakehand_info.u.c.port = port_buf;
-
-        ret = dtls_shakehand(ssl, &shakehand_info);
-        if (ret != 0)
-        {
-            ATINY_LOG(LOG_ERR, "ssl shake hand failed");
-            goto exit;
-        }
-
-        n->ctx = ssl;
-        return 0;
-    exit:
-        dtls_ssl_destroy(ssl);
-        return -1;
-    }
-
-    int NetworkConnect(Network *n, char *addr, int port)
-    {
-        int ret = -1;
-        mqtt_security_info_s *info = NULL;
-
-        if ((n == NULL) || (addr == NULL))
-        {
-            ATINY_LOG(LOG_FATAL, "invalid params.\n");
-            return -1;
-        }
-
-        info = n->get_security_info(n->param);
-        switch (info->security_type)
-        {
-        case MQTT_SECURITY_TYPE_NONE:
-            ret = los_mqtt_connect(n, addr, port);
-            break;
-        case MQTT_SECURITY_TYPE_PSK:
-        case MQTT_SECURITY_TYPE_CA:
-            ret = los_mqtt_tls_connect(n, addr, port);
-            break;
-        default:
-            ATINY_LOG(LOG_WARNING, "unknow proto : %d\n", info->security_type);
-            break;
-        }
-
-        return ret;
-    }
-
-    static void los_mqtt_disconnect(void *ctx)
-    {
-        if (ctx == NULL)
-        {
-            ATINY_LOG(LOG_FATAL, "invalid params.\n");
-            return;
-        }
-        atiny_net_close(ctx);
-
-        return;
-    }
-
-    void NetworkDisconnect(Network *n)
-    {
-        mqtt_security_info_s *info = NULL;
-        if (n == NULL)
-        {
-            ATINY_LOG(LOG_FATAL, "invalid params.\n");
-            return;
-        }
-
-        info = n->get_security_info(n->param);
-        switch (info->security_type)
-        {
-        case MQTT_SECURITY_TYPE_NONE:
-            los_mqtt_disconnect(n->ctx);
-            break;
-        case MQTT_SECURITY_TYPE_PSK:
-        case MQTT_SECURITY_TYPE_CA:
-            dtls_ssl_destroy(n->ctx);
-            break;
-        default:
-            ATINY_LOG(LOG_WARNING, "unknow proto : %d\n", info->security_type);
-            break;
-        }
-
-        n->ctx = NULL;
-
-        return;
-    }
-
-#ifdef __cplusplus
-#if __cplusplus
+    return rc;
 }
-#endif /* __cplusplus */
-#endif /* __cplusplus */
+
+void TimerInit(Timer *timer)
+{
+    timer->end_time = (struct timeval){0, 0};
+}
+
+char TimerIsExpired(Timer *timer)
+{
+    struct timeval now, res;
+    gettimeofday(&now, NULL);
+    timersub(&timer->end_time, &now, &res);
+    return res.tv_sec < 0 || (res.tv_sec == 0 && res.tv_usec <= 0);
+}
+
+void TimerCountdownMS(Timer *timer, unsigned int timeout)
+{
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    struct timeval interval = {timeout / 1000, (timeout % 1000) * 1000};
+    timeradd(&now, &interval, &timer->end_time);
+}
+
+void TimerCountdown(Timer *timer, unsigned int timeout)
+{
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    struct timeval interval = {timeout, 0};
+    timeradd(&now, &interval, &timer->end_time);
+}
+
+int TimerLeftMS(Timer *timer)
+{
+    struct timeval now, res;
+    gettimeofday(&now, NULL);
+    timersub(&timer->end_time, &now, &res);
+    // printf("left %d ms\n", (res.tv_sec < 0) ? 0 : res.tv_sec * 1000 + res.tv_usec / 1000);
+    return (res.tv_sec < 0) ? 0 : res.tv_sec * 1000 + res.tv_usec / 1000;
+}
+
+void MutexInit(Mutex *mutex)
+{
+    mutex->sem = osSemaphoreNew(1, 1, NULL);
+}
+
+int MutexLock(Mutex *mutex)
+{
+    return osSemaphoreAcquire(mutex->sem, LOS_WAIT_FOREVER);
+}
+
+int MutexUnlock(Mutex *mutex)
+{
+    return osSemaphoreRelease(mutex->sem);
+}
+
+int linux_read(Network *n, unsigned char *buffer, int len, int timeout_ms)
+{
+    struct timeval interval = {timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+    if (interval.tv_sec < 0 || (interval.tv_sec == 0 && interval.tv_usec <= 0))
+    {
+        interval.tv_sec = 0;
+        interval.tv_usec = 100;
+    }
+
+    setsockopt(n->my_socket, SOL_SOCKET, SO_RCVTIMEO, (char *)&interval, sizeof(struct timeval));
+
+    int bytes = 0;
+    while (bytes < len)
+    {
+        int rc = recv(n->my_socket, &buffer[bytes], (size_t)(len - bytes), 0);
+        if (rc == -1)
+        {
+            if (errno != EAGAIN && errno != EWOULDBLOCK)
+                bytes = -1;
+            break;
+        }
+        else if (rc == 0)
+        {
+            bytes = 0;
+            break;
+        }
+        else
+            bytes += rc;
+    }
+    return bytes;
+}
+
+int linux_write(Network *n, unsigned char *buffer, int len, int timeout_ms)
+{
+    struct timeval tv;
+
+    tv.tv_sec = 0;                  /* 30 Secs Timeout */
+    tv.tv_usec = timeout_ms * 1000; // Not init'ing this can cause strange errors
+
+    setsockopt(n->my_socket, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv, sizeof(struct timeval));
+    int rc = send(n->my_socket, buffer, len, 0);
+    return rc;
+}
+
+void NetworkInit(Network *n)
+{
+    n->my_socket = 0;
+    n->mqttread = linux_read;
+    n->mqttwrite = linux_write;
+}
+
+int NetworkConnect(Network *n, char *addr, int port)
+{
+    int type = SOCK_STREAM;
+    struct sockaddr_in address;
+    int rc = -1;
+    sa_family_t family = AF_INET;
+    struct addrinfo *result = NULL;
+    struct addrinfo hints = {0, AF_UNSPEC, SOCK_STREAM, IPPROTO_TCP, 0, NULL, NULL, NULL};
+
+    if ((rc = getaddrinfo(addr, NULL, &hints, &result)) == 0)
+    {
+        struct addrinfo *res = result;
+
+        /* prefer ip4 addresses */
+        while (res)
+        {
+            if (res->ai_family == AF_INET)
+            {
+                result = res;
+                break;
+            }
+            res = res->ai_next;
+        }
+
+        if (result->ai_family == AF_INET)
+        {
+            address.sin_port = htons(port);
+            address.sin_family = family = AF_INET;
+            address.sin_addr = ((struct sockaddr_in *)(result->ai_addr))->sin_addr;
+        }
+        else
+            rc = -1;
+
+        freeaddrinfo(result);
+    }
+
+    if (rc == 0)
+    {
+        n->my_socket = socket(family, type, 0);
+        if (n->my_socket != -1)
+            rc = connect(n->my_socket, (struct sockaddr *)&address, sizeof(address));
+        else
+            rc = -1;
+    }
+
+    return rc;
+}
+
+void NetworkDisconnect(Network *n)
+{
+    close(n->my_socket);
+}

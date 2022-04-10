@@ -9,10 +9,17 @@ config("pahomqtt_config") {
         "MQTTPacket/samples",
         "//device/soc/hisilicon/hi3861v100/sdk_liteos/third_party/lwip_sack/include",
         "//kernel/liteos_m/kal/cmsis",
+        "//kernel/liteos_m/kernel/include"
     ]
 }
 
-
+    cflags = [ "-Wno-unused-variable" ]
+    cflags += [ "-Wno-unused-but-set-variable" ]
+    cflags += [ "-Wno-unused-parameter" ]
+    cflags += [ "-Wno-sign-compare" ]
+    cflags += [ "-Wno-unused-function" ]
+    cflags += [ "-Wno-return-type" ]
+    
 pahomqtt_sources = [
 "MQTTClient-C/src/liteOS/MQTTliteos.c",
 "MQTTClient-C/src/MQTTClient.c",
