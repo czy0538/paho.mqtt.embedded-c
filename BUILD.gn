@@ -3,15 +3,19 @@ import("//build/lite/ndk/ndk.gni")
 
 config("pahomqtt_config") {
     include_dirs = [
+    	"MQTTClient-C/src",
+        "MQTTClient-C/src/liteOS",
         "MQTTPacket/src",
         "MQTTPacket/samples",
-        "//device/hisilicon/hispark_pegasus/sdk_liteos/third_party/lwip_sack/include",
+        "//device/soc/hisilicon/hi3861v100/sdk_liteos/third_party/lwip_sack/include",
         "//kernel/liteos_m/kal/cmsis",
     ]
 }
 
 
 pahomqtt_sources = [
+"MQTTClient-C/src/liteOS/MQTTliteos.c",
+"MQTTClient-C/src/MQTTClient.c",
 "MQTTPacket/samples/transport.c",
 "MQTTPacket/src/MQTTConnectClient.c",
 "MQTTPacket/src/MQTTConnectServer.c",
