@@ -3,7 +3,7 @@ import("//build/lite/ndk/ndk.gni")
 
 config("pahomqtt_config") {
     include_dirs = [
-    	"MQTTClient-C/src",
+        "MQTTClient-C/src",
         "MQTTClient-C/src/liteOS",
         "MQTTPacket/src",
         "MQTTPacket/samples",
