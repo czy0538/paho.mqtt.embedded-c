@@ -29,7 +29,7 @@ int ThreadStart(Thread *thread, void (*fn)(void *), void *arg)
     attr.cb_mem = NULL;
     attr.cb_size = 0U;
     attr.stack_mem = NULL;
-    attr.stack_size = 2048;
+    attr.stack_size = 10240;
     attr.priority = osThreadGetPriority(osThreadGetId());
 
     rc = (int)osThreadNew((osThreadFunc_t)fn, arg, &attr);
